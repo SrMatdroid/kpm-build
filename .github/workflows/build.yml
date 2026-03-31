@@ -25,14 +25,15 @@ jobs:
         run: |
           KP_DIR=kpatch
           CC=aarch64-linux-gnu-gcc
+          SRC=uname_spoof.c
 
-          INCLUDE_DIRS=". include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include"
           INCLUDE_FLAGS=""
-          for dir in $INCLUDE_DIRS; do
+          for dir in . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include; do
             INCLUDE_FLAGS="$INCLUDE_FLAGS -I$KP_DIR/kernel/$dir"
           done
 
-          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o  $GITHUB_WORKSPACE/uname_spoof.c
+          ls -la
+          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o uname_spoof.o $SRC
           $CC -r -o uname_spoof.kpm uname_spoof.o
 
       - name: Upload artifact
