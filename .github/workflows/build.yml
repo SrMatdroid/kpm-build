@@ -16,29 +16,34 @@ jobs:
         run: |
           wget -q https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           tar xf arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          echo "TOOLCHAIN_PATH=$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_ENV
           echo "$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
 
       - name: Clone KernelPatch SDK
         run: |
-          git clone https://github.com/KernelSU-Next/KPatch-Next kpatch
+          git clone --depth 1 https://github.com/KernelSU-Next/KPatch-Next kpatch
 
       - name: Build KPM
         run: |
           KP_DIR=kpatch
           CC=aarch64-none-linux-gnu-gcc
           SRC=uname_spoof.c
-
-          INCLUDE_FLAGS=""
-          for dir in . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include; do
-            INCLUDE_FLAGS="$INCLUDE_FLAGS -I$KP_DIR/kernel/$dir"
-          done
-
-          ls -la
-          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o uname_spoof.o $SRC
+          
+          # Configuración de Includes basada en el SDK de KPatch
+          INCLUDE_FLAGS="-I. -I$KP_DIR/kernel/include -I$KP_DIR/kernel/patch/include -I$KP_DIR/kernel/linux/include -I$KP_DIR/kernel/linux/arch/arm64/include"
+          
+          # Flags para entorno kernel (evita dependencias de librerías de usuario)
+          CFLAGS="-O2 -fno-stack-protector -ffreestanding -fno-asynchronous-unwind-tables -fno-unwind-tables -D__user="
+          
+          echo "Compilando objeto..."
+          $CC $INCLUDE_FLAGS $CFLAGS -c -o uname_spoof.o $SRC
+          
+          echo "Enlazando KPM..."
+          # Usamos -r para generar un objeto reubicable (formato KPM)
           $CC -r -o uname_spoof.kpm uname_spoof.o
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: uname_spoof
+          name: uname_spoof_v1.1.0
           path: uname_spoof.kpm
