@@ -12,10 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ARM GNU Toolchain
+      - name: Install ARM GNU Toolchain 12.2
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          wget -q https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          tar xf arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          echo "$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
 
       - name: Clone KernelPatch SDK
         run: |
@@ -24,7 +25,7 @@ jobs:
       - name: Build KPM
         run: |
           KP_DIR=kpatch
-          CC=aarch64-linux-gnu-gcc
+          CC=aarch64-none-linux-gnu-gcc
           SRC=uname_spoof.c
 
           INCLUDE_FLAGS=""
