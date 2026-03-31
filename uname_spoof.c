@@ -10,8 +10,8 @@
 
 KPM_NAME("uname_spoof");
 KPM_VERSION("1.0.0");
-KPM_LICENSE("GPL v2");
-KPM_AUTHOR("jose");
+KPM_LICENSE("GPL v3");
+KPM_AUTHOR("srmatdroid");
 KPM_DESCRIPTION("spoof uname build date");
 
 #define __NEW_UTS_LEN 64
