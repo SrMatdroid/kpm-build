@@ -32,7 +32,7 @@ jobs:
             INCLUDE_FLAGS="$INCLUDE_FLAGS -I$KP_DIR/kernel/$dir"
           done
 
-          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o uname_spoof.o uname_spoof.c
+          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o  $GITHUB_WORKSPACE/uname_spoof.c
           $CC -r -o uname_spoof.kpm uname_spoof.o
 
       - name: Upload artifact
