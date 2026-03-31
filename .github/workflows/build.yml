@@ -1,0 +1,42 @@
+name: Build KPM
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM GNU Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Clone KernelPatch SDK
+        run: |
+          git clone https://github.com/KernelSU-Next/KPatch-Next kpatch
+
+      - name: Build KPM
+        run: |
+          KP_DIR=kpatch
+          CC=aarch64-linux-gnu-gcc
+
+          INCLUDE_DIRS=". include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include"
+          INCLUDE_FLAGS=""
+          for dir in $INCLUDE_DIRS; do
+            INCLUDE_FLAGS="$INCLUDE_FLAGS -I$KP_DIR/kernel/$dir"
+          done
+
+          $CC $INCLUDE_FLAGS -D__user= -fno-asynchronous-unwind-tables -fno-unwind-tables -c -O2 -o uname_spoof.o uname_spoof.c
+          $CC -r -o uname_spoof.kpm uname_spoof.o
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uname_spoof
+          path: uname_spoof.kpm
