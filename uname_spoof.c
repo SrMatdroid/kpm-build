@@ -1,19 +1,24 @@
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/printk.h>
+#include <linux/uaccess.h>
+#include <linux/string.h>
+#include <linux/seq_file.h> // Estructura oficial para evitar offsets manuales
+#include <uapi/asm-generic/unistd.h>
+
+// Librerías de tu framework KPM
 #include <compiler.h>
 #include <kpmodule.h>
-#include <linux/printk.h>
 #include <common.h>
 #include <kputils.h>
-#include <linux/uaccess.h>
 #include <syscall.h>
-#include <linux/string.h>
-#include <uapi/asm-generic/unistd.h>
 #include <kallsyms.h>
 
-KPM_NAME("uname_spoof");
-KPM_VERSION("1.3.0");
+KPM_NAME("uname_spoof_v2");
+KPM_VERSION("1.4.0");
 KPM_LICENSE("GPL v3");
 KPM_AUTHOR("srmatdroid");
-KPM_DESCRIPTION("Spoof uname syscall, /proc/version and /proc/cmdline");
+KPM_DESCRIPTION("Spoof uname, /proc/version and /proc/cmdline sin offsets manuales");
 
 #define __NEW_UTS_LEN 64
 #define UTS_RELEASE_OFFSET  ((__NEW_UTS_LEN + 1) * 2)
@@ -25,13 +30,12 @@ KPM_DESCRIPTION("Spoof uname syscall, /proc/version and /proc/cmdline");
 #define FAKE_PROC_VERSION \
     "Linux version 5.10.236-android12-9-00003-gfb24cf99ad97 " \
     "(android-build@build44) (gcc version 12.2.0 (GCC)) " \
-    "#1 SMP PREEMPT Wed Nov 26 00:00:00 UTC 2025"
+    "#1 SMP PREEMPT Wed Nov 26 00:00:00 UTC 2025\n"
 
-// Ajusta este cmdline al tuyo real (consíguelo con: cat /proc/cmdline en stock)
 #define FAKE_PROC_CMDLINE \
     "console=ttyMSM0,115200n8 androidboot.hardware=qcom " \
     "androidboot.console=ttyMSM0 lpm_levels.sleep_disabled=1 " \
-    "androidboot.selinux=enforcing"
+    "androidboot.selinux=enforcing\n"
 
 // --- uname syscall hook ---
 static void after_uname(hook_fargs1_t *args, void *udata)
@@ -51,35 +55,33 @@ static void after_uname(hook_fargs1_t *args, void *udata)
     compat_copy_to_user((char *)uname + UTS_VERSION_OFFSET, clean_buffer, sizeof(clean_buffer));
 }
 
-// --- Helper: sobreescribe el buffer del seq_file ya rellenado ---
-// Layout de seq_file en kernel 5.10 aarch64:
-//   buf   @ +0   (char *)
-//   size  @ +8   (size_t)
-//   from  @ +16  (size_t)
-//   count @ +24  (size_t)
-static void patch_seq_file(void *seq, const char *fake)
+// --- Mejora de parcheo para seq_file ---
+static void patch_seq_file_safe(void *seq_ptr, const char *fake_data)
 {
-    if (!seq) return;
-    char **buf    = (char **)((char *)seq + 0);
-    size_t *count = (size_t *)((char *)seq + 24);
-    if (!buf || !*buf) return;
-
-    size_t len = strlen(fake);
-    memcpy(*buf, fake, len);
-    (*buf)[len] = '\n';
-    *count = len + 1;
+    if (!seq_ptr) return;
+    
+    struct seq_file *m = (struct seq_file *)seq_ptr;
+    
+    // Verificamos que el buffer exista
+    if (m->buf) {
+        size_t len = strlen(fake_data);
+        // Nos aseguramos de no desbordar el buffer original del kernel
+        if (len >= m->size) len = m->size - 1;
+        
+        memcpy(m->buf, fake_data, len);
+        m->count = len; // Forzamos el contador al tamaño de nuestra cadena
+    }
 }
 
-// --- /proc/version after hook ---
+// --- Hooks de /proc ---
 static void after_proc_version(hook_fargs4_t *args, void *udata)
 {
-    patch_seq_file((void *)args->arg0, FAKE_PROC_VERSION);
+    patch_seq_file_safe((void *)args->arg0, FAKE_PROC_VERSION);
 }
 
-// --- /proc/cmdline after hook ---
 static void after_proc_cmdline(hook_fargs4_t *args, void *udata)
 {
-    patch_seq_file((void *)args->arg0, FAKE_PROC_CMDLINE);
+    patch_seq_file_safe((void *)args->arg0, FAKE_PROC_CMDLINE);
 }
 
 static void *proc_version_show_addr = 0;
@@ -87,41 +89,24 @@ static void *proc_cmdline_show_addr = 0;
 
 static long uname_spoof_init(const char *args, const char *event, void *__user reserved)
 {
-    // --- Hook syscall uname ---
+    // 1. Hook uname
     hook_err_t err = inline_hook_syscalln(__NR_uname, 1, 0, after_uname, 0);
-    if (err) pr_err("uname_spoof: syscall hook failed: %d\n", err);
-    else     pr_info("uname_spoof: syscall hook ok\n");
-
-    // --- Hook /proc/version ---
+    
+    // 2. Hook /proc/version
     proc_version_show_addr = (void *)kallsyms_lookup_name("proc_version_show");
-    if (!proc_version_show_addr) {
-        pr_warn("uname_spoof: proc_version_show not found\n");
-    } else {
-        // hook_wrap4(addr, before, after, udata)
-        hook_err_t e = hook_wrap4(proc_version_show_addr, 0, after_proc_version, 0);
-        if (e) pr_err("uname_spoof: proc_version hook failed: %d\n", e);
-        else   pr_info("uname_spoof: proc_version hook ok\n");
+    if (proc_version_show_addr) {
+        hook_wrap4(proc_version_show_addr, 0, after_proc_version, 0);
     }
 
-    // --- Hook /proc/cmdline ---
-    // El símbolo varía según vendor kernel, probamos los dos nombres conocidos
+    // 3. Hook /proc/cmdline (Probando ambos nombres comunes)
     proc_cmdline_show_addr = (void *)kallsyms_lookup_name("proc_cmdline_show");
     if (!proc_cmdline_show_addr)
         proc_cmdline_show_addr = (void *)kallsyms_lookup_name("cmdline_proc_show");
 
-    if (!proc_cmdline_show_addr) {
-        pr_warn("uname_spoof: cmdline show symbol not found\n");
-    } else {
-        hook_err_t e = hook_wrap4(proc_cmdline_show_addr, 0, after_proc_cmdline, 0);
-        if (e) pr_err("uname_spoof: cmdline hook failed: %d\n", e);
-        else   pr_info("uname_spoof: cmdline hook ok\n");
+    if (proc_cmdline_show_addr) {
+        hook_wrap4(proc_cmdline_show_addr, 0, after_proc_cmdline, 0);
     }
 
-    return 0;
-}
-
-static long uname_spoof_control0(const char *args, char *__user out_msg, int outlen)
-{
     return 0;
 }
 
@@ -130,6 +115,11 @@ static long uname_spoof_exit(void *__user reserved)
     inline_unhook_syscalln(__NR_uname, 0, after_uname);
     if (proc_version_show_addr) unhook(proc_version_show_addr);
     if (proc_cmdline_show_addr) unhook(proc_cmdline_show_addr);
+    return 0;
+}
+
+static long uname_spoof_control0(const char *args, char *__user out_msg, int outlen)
+{
     return 0;
 }
 
