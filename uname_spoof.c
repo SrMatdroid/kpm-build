@@ -3,7 +3,6 @@
 #include <linux/printk.h>
 #include <linux/uaccess.h>
 #include <linux/string.h>
-#include <linux/seq_file.h> // Estructura oficial para evitar offsets manuales
 #include <uapi/asm-generic/unistd.h>
 
 // Librerías de tu framework KPM
