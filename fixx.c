@@ -1,103 +1,107 @@
-// selinux_context_hide.c
-// KPM: intercept SELinux context validation for root-related types
-// License: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
+// KPM: framework-spoof
+// Redirige /system/framework/framework.jar al backup original
+// cuando el proceso es Native Detector (com.reveny.nativecheck)
+// Autor: SrMatdroid
 
 #include <compiler.h>
 #include <hook.h>
 #include <kpmodule.h>
 #include <kputils.h>
 #include <linux/err.h>
+#include <linux/fs.h>
+#include <linux/sched.h>
 #include <linux/string.h>
-#include <linux/cred.h>
-#include <asm/current.h>
-#include <uapi/asm-generic/errno.h>
 
-KPM_NAME("selinux-context-hide");
+KPM_NAME("framework-spoof");
 KPM_VERSION("1.0.0");
 KPM_LICENSE("GPL v3");
-KPM_DESCRIPTION("Hide KSU/Magisk SELinux contexts from untrusted apps");
 KPM_AUTHOR("SrMatdroid");
+KPM_DESCRIPTION("Redirige framework.jar al original para bypasear Native Detector");
 
-// Tipos a ocultar - exactamente como aparecen en la policy
-static const char *hidden_types[] = {
-    "u:r:ksu:s0",
-    "u:r:ksu_file:s0",
-    "u:r:magisk:s0",
-    "u:r:magisk_file:s0",
-    "u:r:magisk_daemon:s0",
-    NULL
-};
+// Ruta del backup extraído antes de instalar el mod de Koarios
+#define BACKUP_PATH "/data/adb/kpm_data/framework_orig.jar"
 
-// Firma: int selinux_setprocattr(const char *name, void *value, size_t size)
-// En kernel 5.10 el hook es sobre security_setprocattr
-static int (*orig_security_setprocattr)(const char *lsm, const char *name,
-                                         void *value, size_t size) = NULL;
+// Firma de do_filp_open (kernel 5.10)
+static struct file *(*orig_do_filp_open)(int dfd, struct filename *pathname,
+                                          const struct open_flags *op) = NULL;
 
-static int hook_security_setprocattr(const char *lsm, const char *name,
-                                      void *value, size_t size)
+// Comprueba si el proceso actual es Native Detector
+static bool is_target_process(void)
 {
-    // Solo interceptar escrituras a "current"
-    if (!name || strcmp(name, "current") != 0)
+    char comm[TASK_COMM_LEN] = { 0 };
+    get_task_comm(comm, current);
+    // comm es "nativecheck" (truncado a 15 chars desde com.reveny.nativecheck)
+    return (strstr(comm, "nativecheck") != NULL ||
+            strstr(comm, "reveny") != NULL);
+}
+
+static struct file *hook_do_filp_open(int dfd, struct filename *pathname,
+                                       const struct open_flags *op)
+{
+    if (!pathname || !pathname->name)
         goto original;
 
-    if (!value || size == 0)
+    // Filtra rápido antes de comprobar el proceso (optimización)
+    if (!strstr(pathname->name, "framework.jar"))
         goto original;
 
-    // Comprobar si el caller es una app no privilegiada (uid >= 10000)
-    uid_t uid = current_uid().val;
-    if (uid < 10000)
+    if (!is_target_process())
         goto original;
 
-    // Buscar si el contexto que se intenta escribir contiene tipos root
-    const char *ctx = (const char *)value;
-
-    for (int i = 0; hidden_types[i] != NULL; i++) {
-        // Comparación parcial: el contexto puede tener categorías adicionales
-        // ej: "u:r:ksu:s0:c512,c768" también debe ser interceptado
-        const char *type = hidden_types[i];
-        size_t type_len = strlen(type);
-
-        if (size >= type_len && strncmp(ctx, type, type_len) == 0) {
-            // Devolver EINVAL: "este tipo no existe en la policy"
-            return -EINVAL;
+    {
+        struct filename *alt = getname_kernel(BACKUP_PATH);
+        if (IS_ERR(alt)) {
+            pr_warn("[framework-spoof] getname_kernel falló: %ld\n", PTR_ERR(alt));
+            goto original;
         }
+
+        struct file *f = orig_do_filp_open(AT_FDCWD, alt, op);
+        putname(alt);
+
+        if (IS_ERR(f)) {
+            pr_warn("[framework-spoof] backup no accesible, usando original modificado\n");
+            goto original;
+        }
+
+        pr_info("[framework-spoof] pid %d (%s): redirigido framework.jar → backup\n",
+                current->pid, current->comm);
+        return f;
     }
 
 original:
-    return orig_security_setprocattr(lsm, name, value, size);
+    return orig_do_filp_open(dfd, pathname, op);
 }
 
-static long selinux_hide_init(const char *args, const char *event,
-                               void *__user reserved)
+static long kpm_init(const char *args, const char *event, void *reserved)
 {
-    int ret = 0;
-
-    // Resolver símbolo - en GKI 5.10 está exportado
-    void *sym = kallsyms_lookup_name("security_setprocattr");
-    if (!sym) {
-        pr_err("[selinux-hide] No se encontró security_setprocattr\n");
+    void *target = (void *)kallsyms_lookup_name("do_filp_open");
+    if (!target) {
+        pr_err("[framework-spoof] do_filp_open no encontrado en kallsyms\n");
         return -ENOENT;
     }
 
-    ret = hook_func(sym, (void *)hook_security_setprocattr,
-                    (void **)&orig_security_setprocattr);
-    if (ret) {
-        pr_err("[selinux-hide] hook_func falló: %d\n", ret);
-        return ret;
+    hook_err_t err = hook_wrap(target,
+                               (void *)hook_do_filp_open,
+                               (void **)&orig_do_filp_open);
+    if (err != HOOK_NO_ERR) {
+        pr_err("[framework-spoof] hook_wrap error: %d\n", err);
+        return -EFAULT;
     }
 
-    pr_info("[selinux-hide] Hook instalado en security_setprocattr @ %px\n", sym);
+    pr_info("[framework-spoof] cargado — backup: %s\n", BACKUP_PATH);
     return 0;
 }
 
-static long selinux_hide_exit(void *__user reserved)
+static long kpm_exit(void *reserved)
 {
-    if (orig_security_setprocattr) {
-        unhook_func((void *)hook_security_setprocattr);
-        pr_info("[selinux-hide] Hook eliminado\n");
+    if (orig_do_filp_open) {
+        unhook_func((void *)kallsyms_lookup_name("do_filp_open"));
+        pr_info("[framework-spoof] descargado\n");
     }
     return 0;
 }
 
-KPM_INIT(selinux_hide_init);
-KPM_EXIT(selinux_hide_exit);
+KPM_INIT(kpm_init);
+KPM_EXIT(kpm_exit);
+
