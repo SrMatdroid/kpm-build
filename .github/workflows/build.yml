@@ -38,22 +38,26 @@ jobs:
             https://github.com/bmax121/KernelPatch.git \
             KernelPatch
 
-      - name: Localizar compiler.h
+      - name: Construir flags de include
         run: |
-          echo "Buscando compiler.h en KernelPatch..."
-          find KernelPatch -name "compiler.h" 2>/dev/null
-          # Guardar el directorio para el siguiente paso
-          KP_INCLUDE=$(dirname $(find KernelPatch -name "compiler.h" | head -1))
-          echo "KP_INCLUDE=$KP_INCLUDE" >> $GITHUB_ENV
-          echo "→ Include path: $KP_INCLUDE"
+          echo "=== Estructura de headers en KernelPatch ==="
+          find KernelPatch -name "*.h" | sed 's|/[^/]*$||' | sort -u
+
+          # Recoger todos los directorios únicos que contienen .h
+          INCLUDES=$(find KernelPatch -name "*.h" \
+            | sed 's|/[^/]*$||' \
+            | sort -u \
+            | sed 's/^/-I/' \
+            | tr '\n' ' ')
+
+          echo "INCLUDES=$INCLUDES" >> $GITHUB_ENV
+          echo "→ Flags: $INCLUDES"
 
       - name: Compilar KPM
         run: |
           CC=aarch64-none-elf-gcc
           LD=aarch64-none-elf-ld
           STRIP=aarch64-none-elf-strip
-
-          echo "Usando headers: $KP_INCLUDE"
 
           for src in $(find . -maxdepth 1 -name "*.c"); do
             name=$(basename "${src%.c}")
@@ -62,7 +66,7 @@ jobs:
             $CC -O2 -std=gnu11 -fPIC -nostdlib -nostdinc \
                 -fno-builtin -fno-stack-protector -ffreestanding \
                 -Wno-unused-parameter \
-                -I"$KP_INCLUDE" \
+                $INCLUDES \
                 -c -o "${name}.o" "$src"
 
             $LD -shared -Bsymbolic --no-undefined \
