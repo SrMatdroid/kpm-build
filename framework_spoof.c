@@ -14,11 +14,14 @@ KPM_LICENSE("GPL v3");
 KPM_AUTHOR("SrMatdroid");
 KPM_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
 
-// ── printk (no viene en los headers de KP) ───────────────────────────────────
-extern int printk(const char *fmt, ...);
-#define pr_info(fmt, ...) printk("[fs] " fmt,    ##__VA_ARGS__)
-#define pr_err(fmt, ...)  printk("[fs][E] " fmt, ##__VA_ARGS__)
-#define pr_warn(fmt, ...) printk("[fs][W] " fmt, ##__VA_ARGS__)
+// printk declarado en log.h (incluido vía hook.h) como puntero a función
+// pr_info/pr_err/pr_warn pueden estar o no en log.h — los definimos con prefijo propio
+#define fs_info(fmt, ...) printk("[fs] " fmt,    ##__VA_ARGS__)
+#define fs_err(fmt, ...)  printk("[fs][E] " fmt, ##__VA_ARGS__)
+#define fs_warn(fmt, ...) printk("[fs][W] " fmt, ##__VA_ARGS__)
+
+// unhook_func no está declarado en hook.h de este fork
+extern hook_err_t unhook_func(void *func);
 
 // ── Tipos mínimos ─────────────────────────────────────────────────────────────
 #define TASK_COMM_LEN  16
@@ -110,13 +113,13 @@ static void before_do_filp_open(hook_fargs3_t *args, void *udata)
 
     struct filename *alt = getname_kernel(BACKUP_PATH);
     if (IS_ERR(alt)) {
-        pr_warn("getname_kernel error: %ld\n", PTR_ERR(alt));
+        fs_warn("getname_kernel error: %ld\n", PTR_ERR(alt));
         return;
     }
 
     save_alt((unsigned long)current, alt);
     args->arg1 = (uint64_t)(unsigned long)alt;
-    pr_info("redirigido framework.jar para '%s'\n", comm);
+    fs_info("redirigido framework.jar para '%s'\n", comm);
 }
 
 static void after_do_filp_open(hook_fargs3_t *args, void *udata)
@@ -133,11 +136,11 @@ static long kpm_init(const char *args, const char *event, void *reserved)
     if (sym_comm)
         kp_get_task_comm = (void *)sym_comm;
     else
-        pr_warn("get_task_comm no en kallsyms — comm check deshabilitado\n");
+        fs_warn("get_task_comm no en kallsyms — comm check deshabilitado\n");
 
     unsigned long sym = kallsyms_lookup_name("do_filp_open");
     if (!sym) {
-        pr_err("do_filp_open no encontrado en kallsyms\n");
+        fs_err("do_filp_open no encontrado en kallsyms\n");
         return -1;
     }
 
@@ -146,11 +149,11 @@ static long kpm_init(const char *args, const char *event, void *reserved)
                                (void *)after_do_filp_open,
                                NULL);
     if (err != HOOK_NO_ERR) {
-        pr_err("hook_wrap falló: %d\n", err);
+        fs_err("hook_wrap falló: %d\n", err);
         return -1;
     }
 
-    pr_info("cargado — backup: %s\n", BACKUP_PATH);
+    fs_info("cargado — backup: %s\n", BACKUP_PATH);
     return 0;
 }
 
@@ -158,7 +161,7 @@ static long kpm_exit(void *reserved)
 {
     unsigned long sym = kallsyms_lookup_name("do_filp_open");
     if (sym) unhook_func((void *)sym);
-    pr_info("descargado\n");
+    fs_info("descargado\n");
     return 0;
 }
 
