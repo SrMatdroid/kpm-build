@@ -1,85 +1,49 @@
-name: Build KPM
+name: Build KPM module for Android kernel 5.10
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    paths:
+      - 'framework_spoof.c'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Instalar dependencias
+      - name: Install toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            wget xz-utils make git ca-certificates
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu make
 
-      - name: Descargar ARM GNU Toolchain 12.2.Rel1
+      - name: Download and prepare kernel headers (Android 5.10)
         run: |
-          wget -q \
-            https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz \
-            -O toolchain.tar.xz
-          tar -xf toolchain.tar.xz
-          echo "$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf/bin" >> $GITHUB_PATH
+          git clone --depth 1 -b android-5.10-stable https://android.googlesource.com/kernel/common.git kernel-headers
+          cd kernel-headers
+          make ARCH=arm64 defconfig
+          make ARCH=arm64 modules_prepare
+          # Crear enlace simbólico para que el módulo encuentre los headers de KPM
+          # (suponiendo que hook.h está en el repositorio raíz)
+          cd ..
+          ln -s . kernel-headers/kpm_headers
 
-      - name: Verificar toolchain
-        run: aarch64-none-elf-gcc --version
-
-      - name: Clonar headers de KernelPatch
+      - name: Build the module
         run: |
-          git clone --depth=1 \
-            https://github.com/bmax121/KernelPatch.git \
-            KernelPatch
+          cat > Makefile <<EOF
+          obj-m += framework_spoof.o
+          ccflags-y := -D__KERNEL__ -DMODULE -I\$(KERNELDIR)/include
+          all:
+          	\$(MAKE) -C \$(KERNELDIR) M=\$(PWD) modules
+          clean:
+          	\$(MAKE) -C \$(KERNELDIR) M=\$(PWD) clean
+          EOF
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KERNELDIR=$PWD/kernel-headers
 
-      - name: Construir flags de include
-        run: |
-          echo "=== Estructura de headers en KernelPatch ==="
-          find KernelPatch -name "*.h" | sed 's|/[^/]*$||' | sort -u
-
-          # Recoger todos los directorios únicos que contienen .h
-          INCLUDES=$(find KernelPatch -name "*.h" \
-            | sed 's|/[^/]*$||' \
-            | sort -u \
-            | sed 's/^/-I/' \
-            | tr '\n' ' ')
-
-          echo "INCLUDES=$INCLUDES" >> $GITHUB_ENV
-          echo "→ Flags: $INCLUDES"
-
-      - name: Compilar KPM
-        run: |
-          CC=aarch64-none-elf-gcc
-          LD=aarch64-none-elf-ld
-          STRIP=aarch64-none-elf-strip
-
-          for src in $(find . -maxdepth 1 -name "*.c"); do
-            name=$(basename "${src%.c}")
-            echo "→ Compilando $name..."
-
-            $CC -O2 -std=gnu11 -fPIC -nostdlib -nostdinc \
-                -fno-builtin -fno-stack-protector -ffreestanding \
-                -Wno-unused-parameter \
-                $INCLUDES \
-                -c -o "${name}.o" "$src"
-
-            $LD -shared -Bsymbolic --no-undefined \
-                -o "${name}.kpm" "${name}.o"
-
-            $STRIP --strip-unneeded "${name}.kpm"
-            echo "✓ ${name}.kpm listo"
-          done
-
-      - name: Subir artefacto
+      - name: Upload module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kpm-build-${{ github.run_number }}
-          path: "*.kpm"
-          if-no-files-found: error
-          
+          name: framework_spoof.ko
+          path: framework_spoof.ko
