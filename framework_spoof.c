@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// framework-spoof v1.0 - Redirige framework.jar para Native Detector
+// KPM: framework-spoof v1.3.0
+// Redirige framework.jar al backup para bypasear Native Detector
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/string.h>
@@ -9,13 +11,17 @@
 #include <linux/kallsyms.h>
 #include <linux/version.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("SrMatdroid");
-MODULE_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
+#include <hook.h>
+
+KPM_NAME("framework-spoof");
+KPM_VERSION("1.3.0");
+KPM_LICENSE("GPL v3");
+KPM_AUTHOR("SrMatdroid");
+KPM_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
 
 #define fs_info(fmt, ...) printk(KERN_INFO "[fs] " fmt, ##__VA_ARGS__)
 #define fs_err(fmt, ...)  printk(KERN_ERR  "[fs][E] " fmt, ##__VA_ARGS__)
-#define fs_warn(fmt, ...) printk(KERN_WARN "[fs][W] " fmt, ##__VA_ARGS__)
+#define fs_warn(fmt, ...) printk(KERN_WARNING "[fs][W] " fmt, ##__VA_ARGS__)
 
 #define BACKUP_PATH "/data/adb/kpm_data/framework_orig.jar"
 #define SLOTS 8
@@ -31,8 +37,9 @@ static DEFINE_SPINLOCK(g_slots_lock);
 static void save_alt(pid_t pid, struct filename *alt)
 {
     unsigned long flags;
+    int i;
     spin_lock_irqsave(&g_slots_lock, flags);
-    for (int i = 0; i < SLOTS; i++) {
+    for (i = 0; i < SLOTS; i++) {
         if (!g_slots[i].pid) {
             g_slots[i].pid = pid;
             g_slots[i].alt = alt;
@@ -46,8 +53,9 @@ static struct filename *take_alt(pid_t pid)
 {
     struct filename *alt = NULL;
     unsigned long flags;
+    int i;
     spin_lock_irqsave(&g_slots_lock, flags);
-    for (int i = 0; i < SLOTS; i++) {
+    for (i = 0; i < SLOTS; i++) {
         if (g_slots[i].pid == pid) {
             alt = g_slots[i].alt;
             g_slots[i].pid = 0;
@@ -59,92 +67,97 @@ static struct filename *take_alt(pid_t pid)
     return alt;
 }
 
-static struct filename *(*getname_kernel_ptr)(const char *);
-static void (*putname_ptr)(struct filename *);
+static struct filename *(*getname_kernel_ptr)(const char *filename);
+static void (*putname_ptr)(struct filename *name);
 
 static void resolve_fs_symbols(void)
 {
     getname_kernel_ptr = (void *)kallsyms_lookup_name("getname_kernel");
     putname_ptr = (void *)kallsyms_lookup_name("putname");
+    if (!getname_kernel_ptr || !putname_ptr)
+        fs_warn("getname_kernel o putname no encontrados\n");
 }
 
-// Definimos el tipo del hook manualmente (no depende de hook.h)
-typedef struct {
-    uint64_t arg0, arg1, arg2, arg3, arg4, arg5;
-} hook_fargs3_t;
-
-static unsigned long do_filp_open_addr;
-static void *original_code;
-
-// Función antes del open
-static void before_do_filp_open(hook_fargs3_t *args)
+static void before_do_filp_open(hook_fargs3_t *args, void *udata)
 {
-    struct filename *pn = (struct filename *)(unsigned long)args->arg1;
-    if (!pn || !pn->name) return;
-    if (!strstr(pn->name, "framework.jar")) return;
-    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny")) return;
+    struct filename *pn;
+    struct filename *alt;
+    (void)udata;
+    
+    pn = (struct filename *)(unsigned long)args->arg1;
+    if (!pn || !pn->name)
+        return;
+    if (!strstr(pn->name, "framework.jar"))
+        return;
+    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny"))
+        return;
 
     if (!getname_kernel_ptr) {
         resolve_fs_symbols();
-        if (!getname_kernel_ptr) return;
+        if (!getname_kernel_ptr)
+            return;
     }
 
-    struct filename *alt = getname_kernel_ptr(BACKUP_PATH);
+    alt = getname_kernel_ptr(BACKUP_PATH);
     if (IS_ERR(alt)) {
         fs_warn("getname_kernel error: %ld\n", PTR_ERR(alt));
         return;
     }
+
     save_alt(current->pid, alt);
     args->arg1 = (uint64_t)(unsigned long)alt;
     fs_info("redirigido framework.jar para '%s' (pid %d)\n", current->comm, current->pid);
 }
 
-// Función después del open
-static void after_do_filp_open(hook_fargs3_t *args)
+static void after_do_filp_open(hook_fargs3_t *args, void *udata)
 {
-    struct filename *alt = take_alt(current->pid);
-    if (alt && putname_ptr) putname_ptr(alt);
+    struct filename *alt;
+    (void)args;
+    (void)udata;
+    alt = take_alt(current->pid);
+    if (alt && putname_ptr)
+        putname_ptr(alt);
 }
 
-// Hook mediante escritura de instrucción de salto (simple)
-#include <linux/uaccess.h>
-#include <asm/insn.h>
-
-static void install_hook(void)
+static long kpm_init(const char *args, const char *event, void *reserved)
 {
-    // Guardar los primeros bytes originales y escribir una instrucción de salto
-    // (Implementación muy simplificada; para producción usar kprobes o ftrace)
-    // Por simplicidad, usamos kprobes que es más seguro.
-}
+    unsigned long sym;
+    hook_err_t err;
+    (void)args;
+    (void)event;
+    (void)reserved;
 
-// En su lugar, usamos kprobes para evitar escribir memoria directamente
-#include <linux/kprobes.h>
-
-static struct kprobe kp = {
-    .symbol_name = "do_filp_open",
-    .pre_handler = (kprobe_pre_handler_t)before_do_filp_open,
-    .post_handler = (kprobe_post_handler_t)after_do_filp_open,
-};
-
-static int __init fs_init(void)
-{
-    int ret;
     resolve_fs_symbols();
 
-    ret = register_kprobe(&kp);
-    if (ret < 0) {
-        fs_err("register_kprobe falló: %d\n", ret);
-        return ret;
+    sym = kallsyms_lookup_name("do_filp_open");
+    if (!sym) {
+        fs_err("do_filp_open no encontrado\n");
+        return -1;
     }
+
+    err = hook_wrap((void *)sym, 3,
+                    (void *)before_do_filp_open,
+                    (void *)after_do_filp_open,
+                    NULL);
+    if (err != HOOK_NO_ERR) {
+        fs_err("hook_wrap falló: %d\n", err);
+        return -1;
+    }
+
     fs_info("cargado — backup: %s\n", BACKUP_PATH);
     return 0;
 }
 
-static void __exit fs_exit(void)
+static long kpm_exit(void *reserved)
 {
-    unregister_kprobe(&kp);
+    unsigned long sym;
+    (void)reserved;
+    sym = kallsyms_lookup_name("do_filp_open");
+    if (sym)
+        unhook_func((void *)sym);
     fs_info("descargado\n");
+    return 0;
 }
 
-module_init(fs_init);
-module_exit(fs_exit);
+KPM_INIT(kpm_init);
+KPM_EXIT(kpm_exit);
