@@ -14,17 +14,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu make
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Download and prepare kernel headers (Android 5.10)
         run: |
           git clone --depth 1 -b android12-5.10-lts https://android.googlesource.com/kernel/common.git kernel-headers
           cd kernel-headers
-          make ARCH=arm64 defconfig
-          make ARCH=arm64 modules_prepare
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
 
       - name: Build the module
         run: |
@@ -36,7 +36,7 @@ jobs:
           clean:
           	make -C kernel-headers M=\$(PWD) clean
           EOF
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C kernel-headers M=$(pwd) modules
 
       - name: Upload module artifact
         uses: actions/upload-artifact@v4
