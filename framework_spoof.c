@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// KPM: framework-spoof v1.3.0
+// KPM: framework-spoof v1.4.0
 // Redirige framework.jar al backup para bypasear Native Detector
 
 #include <linux/kernel.h>
@@ -9,15 +9,30 @@
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/kallsyms.h>
-#include <linux/version.h>
 
-#include <hook.h>
+// --- Declaraciones de la API de KPM (sin necesidad de hook.h) ---
+#define KPM_NAME(name)          static const char kpm_name[] = name
+#define KPM_VERSION(ver)        static const char kpm_version[] = ver
+#define KPM_LICENSE(lic)        MODULE_LICENSE(lic)
+#define KPM_AUTHOR(auth)        MODULE_AUTHOR(auth)
+#define KPM_DESCRIPTION(desc)   MODULE_DESCRIPTION(desc)
 
-KPM_NAME("framework-spoof");
-KPM_VERSION("1.3.0");
-KPM_LICENSE("GPL v3");
-KPM_AUTHOR("SrMatdroid");
-KPM_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
+#define KPM_INIT(f)             static int __init _kpm_init(void) { return f(NULL, NULL, NULL); } module_init(_kpm_init)
+#define KPM_EXIT(f)             static void __exit _kpm_exit(void) { f(NULL); } module_exit(_kpm_exit)
+
+typedef enum {
+    HOOK_NO_ERR = 0,
+    HOOK_ERR_GENERAL,
+} hook_err_t;
+
+typedef struct {
+    unsigned long arg0, arg1, arg2, arg3, arg4, arg5;
+} hook_fargs3_t;
+
+extern hook_err_t hook_wrap(void *func, int num_args,
+                            void *before, void *after, void *udata);
+extern void unhook_func(void *func);
+// --------------------------------------------------------------
 
 #define fs_info(fmt, ...) printk(KERN_INFO "[fs] " fmt, ##__VA_ARGS__)
 #define fs_err(fmt, ...)  printk(KERN_ERR  "[fs][E] " fmt, ##__VA_ARGS__)
@@ -67,8 +82,8 @@ static struct filename *take_alt(pid_t pid)
     return alt;
 }
 
-static struct filename *(*getname_kernel_ptr)(const char *filename);
-static void (*putname_ptr)(struct filename *name);
+static struct filename *(*getname_kernel_ptr)(const char *);
+static void (*putname_ptr)(struct filename *);
 
 static void resolve_fs_symbols(void)
 {
@@ -83,20 +98,14 @@ static void before_do_filp_open(hook_fargs3_t *args, void *udata)
     struct filename *pn;
     struct filename *alt;
     (void)udata;
-    
-    pn = (struct filename *)(unsigned long)args->arg1;
-    if (!pn || !pn->name)
-        return;
-    if (!strstr(pn->name, "framework.jar"))
-        return;
-    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny"))
-        return;
 
-    if (!getname_kernel_ptr) {
-        resolve_fs_symbols();
-        if (!getname_kernel_ptr)
-            return;
-    }
+    pn = (struct filename *)(unsigned long)args->arg1;
+    if (!pn || !pn->name) return;
+    if (!strstr(pn->name, "framework.jar")) return;
+    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny")) return;
+
+    if (!getname_kernel_ptr) resolve_fs_symbols();
+    if (!getname_kernel_ptr) return;
 
     alt = getname_kernel_ptr(BACKUP_PATH);
     if (IS_ERR(alt)) {
@@ -105,7 +114,7 @@ static void before_do_filp_open(hook_fargs3_t *args, void *udata)
     }
 
     save_alt(current->pid, alt);
-    args->arg1 = (uint64_t)(unsigned long)alt;
+    args->arg1 = (unsigned long)alt;
     fs_info("redirigido framework.jar para '%s' (pid %d)\n", current->comm, current->pid);
 }
 
@@ -115,17 +124,14 @@ static void after_do_filp_open(hook_fargs3_t *args, void *udata)
     (void)args;
     (void)udata;
     alt = take_alt(current->pid);
-    if (alt && putname_ptr)
-        putname_ptr(alt);
+    if (alt && putname_ptr) putname_ptr(alt);
 }
 
 static long kpm_init(const char *args, const char *event, void *reserved)
 {
     unsigned long sym;
     hook_err_t err;
-    (void)args;
-    (void)event;
-    (void)reserved;
+    (void)args; (void)event; (void)reserved;
 
     resolve_fs_symbols();
 
@@ -153,8 +159,7 @@ static long kpm_exit(void *reserved)
     unsigned long sym;
     (void)reserved;
     sym = kallsyms_lookup_name("do_filp_open");
-    if (sym)
-        unhook_func((void *)sym);
+    if (sym) unhook_func((void *)sym);
     fs_info("descargado\n");
     return 0;
 }
