@@ -40,7 +40,28 @@ jobs:
 
       - name: Compilar KPM
         run: |
-          make CROSS_COMPILE=aarch64-none-elf- KP_DIR=$PWD/KernelPatch
+          CC=aarch64-none-elf-gcc
+          LD=aarch64-none-elf-ld
+          STRIP=aarch64-none-elf-strip
+          KP_INCLUDE="$PWD/KernelPatch/kernel/patch/include"
+
+          # Detectar todos los .c del repo (excepto KernelPatch/)
+          for src in $(find . -maxdepth 1 -name "*.c"); do
+            name=$(basename "${src%.c}")
+            echo "→ Compilando $name..."
+
+            $CC -O2 -std=gnu11 -fPIC -nostdlib -nostdinc \
+                -fno-builtin -fno-stack-protector -ffreestanding \
+                -Wno-unused-parameter \
+                -I"$KP_INCLUDE" \
+                -c -o "${name}.o" "$src"
+
+            $LD -shared -Bsymbolic --no-undefined \
+                -o "${name}.kpm" "${name}.o"
+
+            $STRIP --strip-unneeded "${name}.kpm"
+            echo "✓ ${name}.kpm listo"
+          done
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
