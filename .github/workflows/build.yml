@@ -21,26 +21,22 @@ jobs:
 
       - name: Download and prepare kernel headers (Android 5.10)
         run: |
-          git clone --depth 1 -b android-5.10-stable https://android.googlesource.com/kernel/common.git kernel-headers
+          git clone --depth 1 -b android12-5.10-lts https://android.googlesource.com/kernel/common.git kernel-headers
           cd kernel-headers
           make ARCH=arm64 defconfig
           make ARCH=arm64 modules_prepare
-          # Crear enlace simbólico para que el módulo encuentre los headers de KPM
-          # (suponiendo que hook.h está en el repositorio raíz)
-          cd ..
-          ln -s . kernel-headers/kpm_headers
 
       - name: Build the module
         run: |
           cat > Makefile <<EOF
           obj-m += framework_spoof.o
-          ccflags-y := -D__KERNEL__ -DMODULE -I\$(KERNELDIR)/include
+          ccflags-y := -D__KERNEL__ -DMODULE
           all:
-          	\$(MAKE) -C \$(KERNELDIR) M=\$(PWD) modules
+          	make -C kernel-headers M=\$(PWD) modules
           clean:
-          	\$(MAKE) -C \$(KERNELDIR) M=\$(PWD) clean
+          	make -C kernel-headers M=\$(PWD) clean
           EOF
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KERNELDIR=$PWD/kernel-headers
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
       - name: Upload module artifact
         uses: actions/upload-artifact@v4
