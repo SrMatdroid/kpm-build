@@ -1,146 +1,123 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// KPM: framework-spoof v1.1.0
+// KPM: framework-spoof v1.3.0
 // Redirige framework.jar al backup cuando lo abre Native Detector
 // Autor: SrMatdroid
 
-#include <compiler.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/string.h>
+#include <linux/fs.h>
+#include <linux/sched.h>
+#include <linux/spinlock.h>
+#include <linux/kallsyms.h>
+#include <linux/version.h>
+
 #include <hook.h>
-#include <kpmodule.h>
-#include <kputils.h>
 
 KPM_NAME("framework-spoof");
-KPM_VERSION("1.1.0");
+KPM_VERSION("1.3.0");
 KPM_LICENSE("GPL v3");
 KPM_AUTHOR("SrMatdroid");
 KPM_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
 
-// printk declarado en log.h (incluido vía hook.h) como puntero a función
-// pr_info/pr_err/pr_warn pueden estar o no en log.h — los definimos con prefijo propio
-#define fs_info(fmt, ...) printk("[fs] " fmt,    ##__VA_ARGS__)
-#define fs_err(fmt, ...)  printk("[fs][E] " fmt, ##__VA_ARGS__)
-#define fs_warn(fmt, ...) printk("[fs][W] " fmt, ##__VA_ARGS__)
+#define fs_info(fmt, ...) printk(KERN_INFO "[fs] " fmt, ##__VA_ARGS__)
+#define fs_err(fmt, ...)  printk(KERN_ERR  "[fs][E] " fmt, ##__VA_ARGS__)
+#define fs_warn(fmt, ...) printk(KERN_WARN "[fs][W] " fmt, ##__VA_ARGS__)
 
-// unhook_func no está declarado en hook.h de este fork
-extern hook_err_t unhook_func(void *func);
+#define BACKUP_PATH "/data/adb/kpm_data/framework_orig.jar"
+#define SLOTS 8
 
-// ── Tipos mínimos ─────────────────────────────────────────────────────────────
-#define TASK_COMM_LEN  16
-#define AT_FDCWD       (-100)
-#define MAX_ERRNO      4095UL
-#define IS_ERR(p)      ((unsigned long)(p) > (unsigned long)(-(long)MAX_ERRNO))
-#define PTR_ERR(p)     ((long)(p))
-
-// forward-declare primero para evitar "declared inside parameter list"
-struct task_struct;
-struct open_flags;
-
-struct filename {
-    const char *name;
-    /* resto del struct omitido — solo usamos name */
+struct spoof_slot {
+    pid_t pid;
+    struct filename *alt;
 };
 
-// ── Símbolos del kernel ───────────────────────────────────────────────────────
-extern unsigned long    kallsyms_lookup_name(const char *name);
-extern char            *strstr(const char *h, const char *n);
-extern struct filename *getname_kernel(const char *filename);
-extern void             putname(struct filename *name);
-extern struct task_struct *get_current(void);
-#define current get_current()
+static struct spoof_slot g_slots[SLOTS];
+static DEFINE_SPINLOCK(g_slots_lock);
 
-// get_task_comm: resolvemos en runtime para evitar problemas de linkage
-static void (*kp_get_task_comm)(char *buf, struct task_struct *tsk) = NULL;
-
-// ── Config ────────────────────────────────────────────────────────────────────
-#define BACKUP_PATH "/data/adb/kpm_data/framework_orig.jar"
-
-// ── Slot para pasar alt-filename de before a after hook ──────────────────────
-#define SLOTS 8
-static struct {
-    unsigned long task;
-    struct filename *alt;
-} g_slots[SLOTS];
-
-static volatile int g_lock = 0;
-
-static void slock(void)   { while (__sync_lock_test_and_set(&g_lock, 1)); }
-static void sunlock(void) { __sync_lock_release(&g_lock); }
-
-static void save_alt(unsigned long task, struct filename *alt)
+static void save_alt(pid_t pid, struct filename *alt)
 {
-    slock();
+    unsigned long flags;
+    spin_lock_irqsave(&g_slots_lock, flags);
     for (int i = 0; i < SLOTS; i++) {
-        if (!g_slots[i].task) {
-            g_slots[i].task = task;
-            g_slots[i].alt  = alt;
+        if (!g_slots[i].pid) {
+            g_slots[i].pid = pid;
+            g_slots[i].alt = alt;
             break;
         }
     }
-    sunlock();
+    spin_unlock_irqrestore(&g_slots_lock, flags);
 }
 
-static struct filename *take_alt(unsigned long task)
+static struct filename *take_alt(pid_t pid)
 {
-    struct filename *a = NULL;
-    slock();
+    struct filename *alt = NULL;
+    unsigned long flags;
+    spin_lock_irqsave(&g_slots_lock, flags);
     for (int i = 0; i < SLOTS; i++) {
-        if (g_slots[i].task == task) {
-            a = g_slots[i].alt;
-            g_slots[i].task = 0;
-            g_slots[i].alt  = NULL;
+        if (g_slots[i].pid == pid) {
+            alt = g_slots[i].alt;
+            g_slots[i].pid = 0;
+            g_slots[i].alt = NULL;
             break;
         }
     }
-    sunlock();
-    return a;
+    spin_unlock_irqrestore(&g_slots_lock, flags);
+    return alt;
 }
 
-// ── Hooks ─────────────────────────────────────────────────────────────────────
-// do_filp_open(int dfd, struct filename *pathname, const struct open_flags *op)
-// → 3 argumentos → hook_fargs3_t
+static struct filename *(*getname_kernel_ptr)(const char *filename);
+static void (*putname_ptr)(struct filename *name);
+
+static void resolve_fs_symbols(void)
+{
+    getname_kernel_ptr = (void *)kallsyms_lookup_name("getname_kernel");
+    putname_ptr = (void *)kallsyms_lookup_name("putname");
+    if (!getname_kernel_ptr || !putname_ptr)
+        fs_warn("getname_kernel o putname no encontrados\n");
+}
 
 static void before_do_filp_open(hook_fargs3_t *args, void *udata)
 {
     struct filename *pn = (struct filename *)(unsigned long)args->arg1;
-    if (!pn || !pn->name)                         return;
-    if (!strstr(pn->name, "framework.jar"))        return;
-
-    char comm[TASK_COMM_LEN] = {0};
-    if (kp_get_task_comm)
-        kp_get_task_comm(comm, current);
-
-    if (!strstr(comm, "nativecheck") && !strstr(comm, "reveny"))
+    if (!pn || !pn->name)
+        return;
+    if (!strstr(pn->name, "framework.jar"))
         return;
 
-    struct filename *alt = getname_kernel(BACKUP_PATH);
+    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny"))
+        return;
+
+    if (!getname_kernel_ptr) {
+        fs_warn("getname_kernel no disponible\n");
+        return;
+    }
+
+    struct filename *alt = getname_kernel_ptr(BACKUP_PATH);
     if (IS_ERR(alt)) {
         fs_warn("getname_kernel error: %ld\n", PTR_ERR(alt));
         return;
     }
 
-    save_alt((unsigned long)current, alt);
+    save_alt(current->pid, alt);
     args->arg1 = (uint64_t)(unsigned long)alt;
-    fs_info("redirigido framework.jar para '%s'\n", comm);
+    fs_info("redirigido framework.jar para '%s' (pid %d)\n", current->comm, current->pid);
 }
 
 static void after_do_filp_open(hook_fargs3_t *args, void *udata)
 {
-    struct filename *alt = take_alt((unsigned long)current);
-    if (alt) putname(alt);
+    struct filename *alt = take_alt(current->pid);
+    if (alt && putname_ptr)
+        putname_ptr(alt);
 }
 
-// ── Init / Exit ───────────────────────────────────────────────────────────────
 static long kpm_init(const char *args, const char *event, void *reserved)
 {
-    // Resolver get_task_comm en runtime (es inline en sched.h, puede no estar en kallsyms)
-    unsigned long sym_comm = kallsyms_lookup_name("get_task_comm");
-    if (sym_comm)
-        kp_get_task_comm = (void *)sym_comm;
-    else
-        fs_warn("get_task_comm no en kallsyms — comm check deshabilitado\n");
+    resolve_fs_symbols();
 
     unsigned long sym = kallsyms_lookup_name("do_filp_open");
     if (!sym) {
-        fs_err("do_filp_open no encontrado en kallsyms\n");
+        fs_err("do_filp_open no encontrado\n");
         return -1;
     }
 
@@ -160,7 +137,8 @@ static long kpm_init(const char *args, const char *event, void *reserved)
 static long kpm_exit(void *reserved)
 {
     unsigned long sym = kallsyms_lookup_name("do_filp_open");
-    if (sym) unhook_func((void *)sym);
+    if (sym)
+        unhook_func((void *)sym);
     fs_info("descargado\n");
     return 0;
 }
