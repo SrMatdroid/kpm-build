@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// KPM: framework-spoof v1.3.0
-// Redirige framework.jar al backup cuando lo abre Native Detector
-// Autor: SrMatdroid
-
+// framework-spoof v1.0 - Redirige framework.jar para Native Detector
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/string.h>
@@ -12,13 +9,9 @@
 #include <linux/kallsyms.h>
 #include <linux/version.h>
 
-#include <hook.h>
-
-KPM_NAME("framework-spoof");
-KPM_VERSION("1.3.0");
-KPM_LICENSE("GPL v3");
-KPM_AUTHOR("SrMatdroid");
-KPM_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("SrMatdroid");
+MODULE_DESCRIPTION("Redirige framework.jar al backup para bypasear Native Detector");
 
 #define fs_info(fmt, ...) printk(KERN_INFO "[fs] " fmt, ##__VA_ARGS__)
 #define fs_err(fmt, ...)  printk(KERN_ERR  "[fs][E] " fmt, ##__VA_ARGS__)
@@ -66,31 +59,34 @@ static struct filename *take_alt(pid_t pid)
     return alt;
 }
 
-static struct filename *(*getname_kernel_ptr)(const char *filename);
-static void (*putname_ptr)(struct filename *name);
+static struct filename *(*getname_kernel_ptr)(const char *);
+static void (*putname_ptr)(struct filename *);
 
 static void resolve_fs_symbols(void)
 {
     getname_kernel_ptr = (void *)kallsyms_lookup_name("getname_kernel");
     putname_ptr = (void *)kallsyms_lookup_name("putname");
-    if (!getname_kernel_ptr || !putname_ptr)
-        fs_warn("getname_kernel o putname no encontrados\n");
 }
 
-static void before_do_filp_open(hook_fargs3_t *args, void *udata)
+// Definimos el tipo del hook manualmente (no depende de hook.h)
+typedef struct {
+    uint64_t arg0, arg1, arg2, arg3, arg4, arg5;
+} hook_fargs3_t;
+
+static unsigned long do_filp_open_addr;
+static void *original_code;
+
+// Función antes del open
+static void before_do_filp_open(hook_fargs3_t *args)
 {
     struct filename *pn = (struct filename *)(unsigned long)args->arg1;
-    if (!pn || !pn->name)
-        return;
-    if (!strstr(pn->name, "framework.jar"))
-        return;
-
-    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny"))
-        return;
+    if (!pn || !pn->name) return;
+    if (!strstr(pn->name, "framework.jar")) return;
+    if (!strstr(current->comm, "nativecheck") && !strstr(current->comm, "reveny")) return;
 
     if (!getname_kernel_ptr) {
-        fs_warn("getname_kernel no disponible\n");
-        return;
+        resolve_fs_symbols();
+        if (!getname_kernel_ptr) return;
     }
 
     struct filename *alt = getname_kernel_ptr(BACKUP_PATH);
@@ -98,50 +94,57 @@ static void before_do_filp_open(hook_fargs3_t *args, void *udata)
         fs_warn("getname_kernel error: %ld\n", PTR_ERR(alt));
         return;
     }
-
     save_alt(current->pid, alt);
     args->arg1 = (uint64_t)(unsigned long)alt;
     fs_info("redirigido framework.jar para '%s' (pid %d)\n", current->comm, current->pid);
 }
 
-static void after_do_filp_open(hook_fargs3_t *args, void *udata)
+// Función después del open
+static void after_do_filp_open(hook_fargs3_t *args)
 {
     struct filename *alt = take_alt(current->pid);
-    if (alt && putname_ptr)
-        putname_ptr(alt);
+    if (alt && putname_ptr) putname_ptr(alt);
 }
 
-static long kpm_init(const char *args, const char *event, void *reserved)
+// Hook mediante escritura de instrucción de salto (simple)
+#include <linux/uaccess.h>
+#include <asm/insn.h>
+
+static void install_hook(void)
 {
+    // Guardar los primeros bytes originales y escribir una instrucción de salto
+    // (Implementación muy simplificada; para producción usar kprobes o ftrace)
+    // Por simplicidad, usamos kprobes que es más seguro.
+}
+
+// En su lugar, usamos kprobes para evitar escribir memoria directamente
+#include <linux/kprobes.h>
+
+static struct kprobe kp = {
+    .symbol_name = "do_filp_open",
+    .pre_handler = (kprobe_pre_handler_t)before_do_filp_open,
+    .post_handler = (kprobe_post_handler_t)after_do_filp_open,
+};
+
+static int __init fs_init(void)
+{
+    int ret;
     resolve_fs_symbols();
 
-    unsigned long sym = kallsyms_lookup_name("do_filp_open");
-    if (!sym) {
-        fs_err("do_filp_open no encontrado\n");
-        return -1;
+    ret = register_kprobe(&kp);
+    if (ret < 0) {
+        fs_err("register_kprobe falló: %d\n", ret);
+        return ret;
     }
-
-    hook_err_t err = hook_wrap((void *)sym, 3,
-                               (void *)before_do_filp_open,
-                               (void *)after_do_filp_open,
-                               NULL);
-    if (err != HOOK_NO_ERR) {
-        fs_err("hook_wrap falló: %d\n", err);
-        return -1;
-    }
-
     fs_info("cargado — backup: %s\n", BACKUP_PATH);
     return 0;
 }
 
-static long kpm_exit(void *reserved)
+static void __exit fs_exit(void)
 {
-    unsigned long sym = kallsyms_lookup_name("do_filp_open");
-    if (sym)
-        unhook_func((void *)sym);
+    unregister_kprobe(&kp);
     fs_info("descargado\n");
-    return 0;
 }
 
-KPM_INIT(kpm_init);
-KPM_EXIT(kpm_exit);
+module_init(fs_init);
+module_exit(fs_exit);
