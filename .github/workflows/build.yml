@@ -1,32 +1,30 @@
-name: Build KPM module for Android kernel 5.10
+name: Build kernel module
 
 on:
   push:
     paths:
       - 'framework_spoof.c'
-      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install cross toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-      - name: Download and prepare kernel headers (Android 5.10)
+      - name: Get kernel headers (5.10)
         run: |
           git clone --depth 1 -b android12-5.10-lts https://android.googlesource.com/kernel/common.git kernel-headers
           cd kernel-headers
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
 
-      - name: Build the module
+      - name: Build module
         run: |
           cat > Makefile <<EOF
           obj-m += framework_spoof.o
@@ -38,7 +36,7 @@ jobs:
           EOF
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C kernel-headers M=$(pwd) modules
 
-      - name: Upload module artifact
+      - name: Upload .ko
         uses: actions/upload-artifact@v4
         with:
           name: framework_spoof.ko
