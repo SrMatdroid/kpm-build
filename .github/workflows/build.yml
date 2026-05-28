@@ -1,9 +1,11 @@
-name: Build kernel module
+name: Build KPM module
 
 on:
   push:
     paths:
       - 'framework_spoof.c'
+      - 'hook.h'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 jobs:
@@ -28,7 +30,7 @@ jobs:
         run: |
           cat > Makefile <<EOF
           obj-m += framework_spoof.o
-          ccflags-y := -D__KERNEL__ -DMODULE
+          ccflags-y := -D__KERNEL__ -DMODULE -I\$(PWD)
           all:
           	make -C kernel-headers M=\$(PWD) modules
           clean:
@@ -36,7 +38,7 @@ jobs:
           EOF
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C kernel-headers M=$(pwd) modules
 
-      - name: Upload .ko
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: framework_spoof.ko
