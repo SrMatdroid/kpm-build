@@ -1,4 +1,4 @@
-name: fixx
+name: Build KPM
 
 on:
   push:
@@ -38,14 +38,23 @@ jobs:
             https://github.com/bmax121/KernelPatch.git \
             KernelPatch
 
+      - name: Localizar compiler.h
+        run: |
+          echo "Buscando compiler.h en KernelPatch..."
+          find KernelPatch -name "compiler.h" 2>/dev/null
+          # Guardar el directorio para el siguiente paso
+          KP_INCLUDE=$(dirname $(find KernelPatch -name "compiler.h" | head -1))
+          echo "KP_INCLUDE=$KP_INCLUDE" >> $GITHUB_ENV
+          echo "→ Include path: $KP_INCLUDE"
+
       - name: Compilar KPM
         run: |
           CC=aarch64-none-elf-gcc
           LD=aarch64-none-elf-ld
           STRIP=aarch64-none-elf-strip
-          KP_INCLUDE="$PWD/KernelPatch/kernel/patch/include"
 
-          # Detectar todos los .c del repo (excepto KernelPatch/)
+          echo "Usando headers: $KP_INCLUDE"
+
           for src in $(find . -maxdepth 1 -name "*.c"); do
             name=$(basename "${src%.c}")
             echo "→ Compilando $name..."
@@ -63,7 +72,7 @@ jobs:
             echo "✓ ${name}.kpm listo"
           done
 
-      - name: fixx
+      - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
           name: kpm-build-${{ github.run_number }}
