@@ -1,4 +1,4 @@
-name: Build KPM
+name: fixx
 
 on:
   push:
@@ -63,7 +63,7 @@ jobs:
             echo "✓ ${name}.kpm listo"
           done
 
-      - name: Subir artefacto
+      - name: fixx
         uses: actions/upload-artifact@v4
         with:
           name: kpm-build-${{ github.run_number }}
