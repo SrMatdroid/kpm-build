@@ -2,7 +2,9 @@ name: Build KPM
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -10,40 +12,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Install ARM GNU Toolchain 12.2
+      - name: Instalar dependencias
         run: |
-          wget -q https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          tar xf arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          echo "TOOLCHAIN_PATH=$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_ENV
-          echo "$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            wget xz-utils make git ca-certificates
 
-      - name: Clone KernelPatch SDK
+      - name: Descargar ARM GNU Toolchain 12.2.Rel1
         run: |
-          git clone --depth 1 https://github.com/KernelSU-Next/KPatch-Next kpatch
+          wget -q \
+            https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz \
+            -O toolchain.tar.xz
+          tar -xf toolchain.tar.xz
+          echo "$PWD/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf/bin" >> $GITHUB_PATH
 
-      - name: Build KPM
+      - name: Verificar toolchain
+        run: aarch64-none-elf-gcc --version
+
+      - name: Clonar headers de KernelPatch
         run: |
-          KP_DIR=kpatch
-          CC=aarch64-none-linux-gnu-gcc
-          SRC=uname_spoof.c
-          
-          # Configuración de Includes basada en el SDK de KPatch
-          INCLUDE_FLAGS="-I. -I$KP_DIR/kernel/include -I$KP_DIR/kernel/patch/include -I$KP_DIR/kernel/linux/include -I$KP_DIR/kernel/linux/arch/arm64/include"
-          
-          # Flags para entorno kernel (evita dependencias de librerías de usuario)
-          CFLAGS="-O2 -fno-stack-protector -ffreestanding -fno-asynchronous-unwind-tables -fno-unwind-tables -D__user="
-          
-          echo "Compilando objeto..."
-          $CC $INCLUDE_FLAGS $CFLAGS -c -o uname_spoof.o $SRC
-          
-          echo "Enlazando KPM..."
-          # Usamos -r para generar un objeto reubicable (formato KPM)
-          $CC -r -o uname_spoof.kpm uname_spoof.o
+          git clone --depth=1 \
+            https://github.com/bmax121/KernelPatch.git \
+            KernelPatch
 
-      - name: Upload artifact
+      - name: Compilar KPM
+        run: |
+          make CROSS_COMPILE=aarch64-none-elf- KP_DIR=$PWD/KernelPatch
+
+      - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: uname_spoof_v1.1.0
-          path: uname_spoof.kpm
+          name: kpm-build-${{ github.run_number }}
+          path: "*.kpm"
+          if-no-files-found: error
+          
